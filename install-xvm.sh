@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 APP_NAME="xvm"
 REPO="AntonSeagull/xcode-version-manager"
@@ -8,39 +8,35 @@ INSTALL_PATH="/usr/local/bin"
 
 echo "🧩 $APP_NAME installer / установщик"
 
-# Detect OS and architecture
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-# Normalize architecture
-if [[ "$ARCH" == "x86_64" ]]; then
-  ARCH="amd64"
-elif [[ "$ARCH" == "arm64" || "$ARCH" == "aarch64" ]]; then
-  ARCH="arm64"
-else
-  echo "❌ Unsupported architecture: $ARCH"
-  echo "⛔️ Неподдерживаемая архитектура: $ARCH"
-  exit 1
-fi
+# Normalize arch
+case "$ARCH" in
+  x86_64) ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) echo "❌ Unsupported arch: $ARCH / Неподдерживаемая архитектура"; exit 1 ;;
+esac
 
-# Normalize OS
-if [[ "$OS" == "darwin" ]]; then
-  OS="macos"
-elif [[ "$OS" == "linux" ]]; then
-  OS="linux"
-else
-  echo "❌ Unsupported OS: $OS"
-  echo "⛔️ Неподдерживаемая ОС: $OS"
-  exit 1
-fi
+# Normalize OS (важно: darwin, а не macos)
+case "$OS" in
+  darwin) OS="darwin" ;;
+  linux)  OS="linux" ;;
+  *) echo "❌ Unsupported OS: $OS / Неподдерживаемая ОС"; exit 1 ;;
+esac
 
-# Determine binary name
-BINARY="${APP_NAME}-${OS}-${ARCH}"
+EXT=""
+BINARY="${APP_NAME}-${OS}-${ARCH}${EXT}"
 
-# Get latest version if not provided
-if [ "$VERSION" == "latest" ]; then
-  echo "🔍 Fetching latest release version... / Получение последней версии..."
-  VERSION=$(curl -s https://api.github.com/repos/$REPO/releases/latest | grep tag_name | cut -d '"' -f 4)
+# Resolve version
+if [[ "$VERSION" == "latest" ]]; then
+  echo "🔍 Fetching latest release... / Получение последней версии..."
+  VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    | grep -m1 '"tag_name":' | cut -d '"' -f 4)
+  if [[ -z "$VERSION" ]]; then
+    echo "❌ Cannot resolve latest tag / Не удалось получить тег последнего релиза"
+    exit 1
+  fi
 fi
 
 URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY"
@@ -48,13 +44,27 @@ URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY"
 echo "⬇️ Downloading $URL ..."
 echo "📥 Загрузка бинарника $BINARY версии $VERSION ..."
 
-curl -L "$URL" -o "$APP_NAME"
-chmod +x "$APP_NAME"
+# Проверка, что ассет существует (HTTP 200)
+HTTP_CODE=$(curl -sIL "$URL" | awk '/^HTTP/{code=$2} END{print code}')
+if [[ "$HTTP_CODE" != "200" ]]; then
+  echo "❌ Asset not found (HTTP $HTTP_CODE): $URL"
+  echo "⛔️ Файл релиза не найден. Проверь, что в релизе есть ассет с именем: $BINARY"
+  exit 1
+fi
 
-# Install
+# Скачиваем во временный файл
+TMP="$(mktemp)"
+curl -fsSL "$URL" -o "$TMP"
+chmod +x "$TMP"
+
+# На macOS иногда появляется quarantine-бит — снимем его
+if [[ "$OS" == "darwin" ]]; then
+  xattr -dr com.apple.quarantine "$TMP" 2>/dev/null || true
+fi
+
 echo "📦 Installing to $INSTALL_PATH/$APP_NAME ..."
 echo "⚙️ Установка в $INSTALL_PATH/$APP_NAME ..."
-sudo mv "$APP_NAME" "$INSTALL_PATH/$APP_NAME"
+sudo mv "$TMP" "$INSTALL_PATH/$APP_NAME"
 
 echo
 echo "✅ $APP_NAME version $VERSION installed successfully!"
